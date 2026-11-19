@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+
+# plugin-forge working data and anything that could hold credentials
+.forge/
+cookies*.txt
+*.cookies
+.env
+.env.*
+.claude/settings.local.json

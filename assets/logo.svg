@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140" role="img" aria-label="plugin-forge mark: copper anvil with a play cut-out and circuit-trace sparks">
+<path d="M58 58 V46 L46 34 V24" fill="none" stroke="#D9823B" stroke-width="4" stroke-linejoin="round"/>
+<path d="M82 58 V46 L94 34 V24" fill="none" stroke="#D9823B" stroke-width="4" stroke-linejoin="round"/>
+<path d="M70 58 V30" fill="none" stroke="#D9823B" stroke-width="4"/>
+<circle cx="46" cy="19" r="5" fill="#1A120D" stroke="#D9823B" stroke-width="3"/>
+<circle cx="94" cy="19" r="5" fill="#1A120D" stroke="#D9823B" stroke-width="3"/>
+<circle cx="70" cy="24" r="6" fill="#5EE6B0"/>
+<path d="M18 58 H114 V70 Q114 76 108 76 H92 V98 L106 110 V118 H34 V110 L48 98 V76 H44 Q28 76 18 58 Z" fill="#D9823B"/>
+<path d="M64 81 L77 88 L64 95 Z" fill="#1A120D" stroke="#1A120D" stroke-width="3" stroke-linejoin="round"/>
+</svg>

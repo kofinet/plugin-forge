@@ -1,0 +1,16 @@
+{
+  "name": "plugin-forge",
+  "version": "0.2.0",
+  "description": "Forge a Claude Code plugin from a YouTube channel. Scaffolds a plugin project, downloads videos (transcripts + optional frames) from a channel, distills the knowledge into cited reference docs, and builds a new plugin with skills and commands.",
+  "author": {
+    "name": "Marek Kawa",
+    "url": "https://github.com/kofinet"
+  },
+  "homepage": "https://github.com/kofinet/plugin-forge",
+  "repository": "https://github.com/kofinet/plugin-forge",
+  "license": "MIT",
+  "keywords": [
+    "plugin-generator", "scaffold", "youtube", "yt-dlp", "transcripts",
+    "knowledge-distillation", "skills", "meta", "automation"
+  ]
+}

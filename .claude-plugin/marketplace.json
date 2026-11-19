@@ -1,0 +1,19 @@
+{
+  "name": "plugin-forge-marketplace",
+  "metadata": {
+    "description": "plugin-forge — turn a YouTube channel into a Claude Code plugin (scaffold, ingest, distill, build)."
+  },
+  "owner": {
+    "name": "Marek Kawa",
+    "url": "https://github.com/kofinet"
+  },
+  "plugins": [
+    {
+      "name": "plugin-forge",
+      "description": "Forge a plugin from a video channel: /forge orchestrates scaffold → ingest → distill → build.",
+      "author": { "name": "Marek Kawa", "url": "https://github.com/kofinet" },
+      "source": "./",
+      "category": "development"
+    }
+  ]
+}
