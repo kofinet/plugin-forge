@@ -15,8 +15,9 @@ scaffold → ingest → (match) → distill → build → (install)
 
 ## The engine (deterministic steps)
 Run via the bundled script (resolve the interpreter: `PY=$(command -v py || command -v python3 || command -v python)`):
-`"$PY" "${CLAUDE_PLUGIN_ROOT}/scripts/forge.py" <scaffold|ingest|refresh|status|match> ...`
-Requires `yt-dlp` (captions/listing) and, only for `--frames`, `ffmpeg`/`ffprobe`.
+`"$PY" "${CLAUDE_PLUGIN_ROOT}/scripts/forge.py" <scaffold|ingest|refresh|status|match|deps> ...`
+Requires `yt-dlp` (captions/listing) and, only for `--frames`, `ffmpeg`/`ffprobe`. `deps --state-dir
+"${CLAUDE_PLUGIN_DATA}"` checks them once; the `forge-setup` skill installs what is missing.
 
 ## Lessons baked in (do these)
 1. **Transcripts are the reliable knowledge carrier.** Free captions (`en.vtt`) cover most channels,

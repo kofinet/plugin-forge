@@ -8,6 +8,7 @@ Subcommands (deterministic steps; distill & build are LLM-driven and live in the
   refresh   --workspace DIR [--count N]             ingest only videos newer than the manifest
   status    --workspace DIR                         print the manifest summary
   match     --workspace DIR --sources DIR           map local code zips/folders to ingested videos
+  deps      [--state-dir DIR] [--recheck]           check python/yt-dlp/ffmpeg, print install commands
 
 ingest/refresh also take --cookies-from-browser BROWSER or --cookies FILE, passed straight to
 yt-dlp, for when YouTube answers "Sign in to confirm you're not a bot".
@@ -16,14 +17,37 @@ Requires `yt-dlp` and (for frames) `ffmpeg`/`ffprobe` on PATH. Transcripts use f
 The workspace is the plugin dir; raw downloads + manifest live under <workspace>/.forge/.
 """
 from __future__ import annotations
-import argparse, json, string, subprocess, sys, zipfile
+import argparse, json, os, platform, shutil, string, subprocess, sys, zipfile
+from datetime import date
 from pathlib import Path
+from typing import Mapping
 
 SLUG_CHARS = set(string.ascii_lowercase + string.digits + "-")
 WORD_CHARS = set(string.ascii_lowercase + string.digits)
 YOUTUBE_LINK_PREFIXES = ("https://youtu", "http://youtu")
 COOKIES_HINT = ("YouTube may be asking to sign in: rerun with --cookies-from-browser <browser> "
-                "or --cookies <cookies.txt> (never commit cookie files).")
+                "or --cookies <cookies.txt>, or remember a browser for automatic retries with "
+                "`forge.py cookies --state-dir <dir> --browser <browser>` (never commit cookie files).")
+SETTINGS_FILE = "settings.json"
+YT_DLP_BROWSERS = {"brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi", "whale"}
+
+SETUP_HINT = "Run /plugin-forge:forge-setup (or `forge.py deps`) to check and install the dependencies."
+MIN_PYTHON = (3, 9)
+DEPS_FILE = "deps.json"
+TOOLS = {  # tool -> what it is for
+    "yt-dlp": "required: captions and channel listing",
+    "ffmpeg": "optional: video frames (--frames)",
+    "ffprobe": "optional: video frames (--frames)",
+}
+REQUIRED_TOOLS = ("yt-dlp",)
+PACKAGE_MANAGERS = ("winget", "brew", "pipx", "apt-get", "dnf", "pacman", "zypper")
+WINGET_IDS = {"yt-dlp": "yt-dlp.yt-dlp", "ffmpeg": "Gyan.FFmpeg"}
+LINUX_FFMPEG = {
+    "apt-get": "sudo apt-get install -y ffmpeg",
+    "dnf": "sudo dnf install -y ffmpeg",
+    "pacman": "sudo pacman -S --noconfirm ffmpeg",
+    "zypper": "sudo zypper install -y ffmpeg",
+}
 
 GENERATED_GITIGNORE = """\
 # plugin-forge working data: raw transcripts/frames of other people's videos.
@@ -37,7 +61,69 @@ __pycache__/
 
 # ---------- helpers ----------
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, text=True, capture_output=True, **kw)
+    """Run a tool and decode its output as UTF-8 (not the Windows ANSI code page)."""
+    try:
+        return subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", **kw)
+    except FileNotFoundError:
+        raise SystemExit(f"{cmd[0]} not found. {SETUP_HINT}") from None
+
+
+def yt_dlp(*args: str) -> list[str]:
+    """A yt-dlp command line; --encoding makes it print UTF-8 even into a Windows pipe."""
+    return [find_tool("yt-dlp") or "yt-dlp", "--encoding", "utf-8", *args]
+
+
+def tool_dirs(home: Path, env: Mapping[str, str], platform: str) -> list[Path]:
+    """Usual install locations a fresh install may not have put on PATH yet
+    (winget links, pipx / pip --user scripts, Homebrew, scoop, Chocolatey, snap)."""
+    dirs = [home / ".local" / "bin"]
+    if platform == "win32":
+        local = Path(env.get("LOCALAPPDATA") or home / "AppData" / "Local")
+        roaming = Path(env.get("APPDATA") or home / "AppData" / "Roaming")
+        dirs += [local / "Microsoft" / "WinGet" / "Links", home / "scoop" / "shims",
+                 Path(env.get("ProgramData") or "C:/ProgramData") / "chocolatey" / "bin"]
+        dirs += sorted(roaming.glob("Python/Python3*/Scripts")) + sorted(local.glob("Programs/Python/Python3*/Scripts"))
+    elif platform == "darwin":
+        dirs += [Path("/opt/homebrew/bin"), Path("/usr/local/bin")] + sorted(home.glob("Library/Python/3.*/bin"))
+    else:
+        dirs += [Path("/usr/local/bin"), Path("/snap/bin"), Path("/home/linuxbrew/.linuxbrew/bin")]
+    return dirs
+
+
+def find_tool(name: str, extra_dirs: list[Path] | None = None) -> str | None:
+    """Absolute path of a tool: from PATH, else from the usual install locations."""
+    if extra_dirs is None:
+        extra_dirs = tool_dirs(Path.home(), os.environ, sys.platform)
+    return shutil.which(name) or shutil.which(name, path=os.pathsep.join(str(d) for d in extra_dirs))
+
+
+def package_managers() -> dict[str, str]:
+    """Package managers on this machine -> how to invoke them (quoted path when off PATH)."""
+    found = {}
+    for m in PACKAGE_MANAGERS:
+        path = find_tool(m)
+        if path:
+            found[m] = m if shutil.which(m) else f'"{path}"'
+    return found
+
+
+def install_command(tool: str, platform: str, managers: Mapping[str, str], python: str) -> str | None:
+    """Command that installs a tool with what this machine has, or None when it needs a manual install."""
+    pkg = "ffmpeg" if tool == "ffprobe" else tool  # ffprobe ships with ffmpeg
+    pip_user = f'"{python}" -m pip install --user {pkg}'
+    if platform == "win32":
+        if "winget" in managers:
+            return f"{managers['winget']} install -e --id {WINGET_IDS[pkg]}"
+        return pip_user if pkg == "yt-dlp" else None
+    if "brew" in managers:  # macOS, or Homebrew on Linux
+        return f"{managers['brew']} install {pkg}"
+    if pkg == "yt-dlp":
+        if "pipx" in managers:
+            return f"{managers['pipx']} install yt-dlp"
+        # distro yt-dlp packages are usually too old for YouTube; system pip is often locked (PEP 668)
+        system = next((m for m in ("apt-get", "dnf") if m in managers), None)
+        return f"sudo {system} install -y pipx && pipx install yt-dlp" if system else pip_user
+    return next((cmd for m, cmd in LINUX_FFMPEG.items() if m in managers), None)
 
 
 def manifest_path(ws: Path) -> Path:
@@ -83,27 +169,37 @@ def strip_tags(s: str) -> str:
         pos = end + 1
 
 
-def clean_vtt(path: Path) -> str:
-    """Turn a clean (non-rolling) en.vtt into '[MM:SS] text' paragraphs (~15s)."""
-    cues, start, buf = [], None, []
+def read_cues(path: Path) -> list[tuple[int, list[str]]]:
+    """(start seconds, cleaned non-empty lines) for each cue of a VTT file."""
+    cues, start, lines = [], None, []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         cue_start = parse_cue_start(line)
         if cue_start is not None:
-            if start is not None and buf:
-                cues.append((start, _clean(" ".join(buf))))
-            start = cue_start
-            buf = []
+            if start is not None and lines:
+                cues.append((start, lines))
+            start, lines = cue_start, []
         elif line.strip() and not line.startswith(("WEBVTT", "Kind:", "Language:")):
-            buf.append(line)
-    if start is not None and buf:
-        cues.append((start, _clean(" ".join(buf))))
-    cues = [(t, x) for t, x in cues if x]
-    # group into ~15s paragraphs, de-duping consecutive identical text
-    paras, cs, cur, prev = [], None, [], None
+            text = _clean(line)
+            if text:
+                lines.append(text)
+    if start is not None and lines:
+        cues.append((start, lines))
+    return cues
+
+
+def clean_vtt(path: Path) -> str:
+    """Turn an en.vtt (manual or rolling auto-captions) into '[MM:SS] text' paragraphs (~15s)."""
+    # Rolling auto-captions repeat the previous cue's line above the new words, so a line
+    # already shown in the previous cue is dropped; this also drops repeated identical cues.
+    cues, prev_lines = [], []
+    for t, lines in read_cues(path):
+        fresh = [ln for ln in lines if ln not in prev_lines]
+        prev_lines = lines
+        if fresh:
+            cues.append((t, " ".join(fresh)))
+    # group into ~15s paragraphs
+    paras, cs, cur = [], None, []
     for t, x in cues:
-        if x == prev:
-            continue
-        prev = x
         if cs is None:
             cs = t
         if t - cs >= 15 and cur:
@@ -160,12 +256,45 @@ def auth_args(a) -> list[str]:
     return []
 
 
-def newest(channel: str, count: int | None, auth: list[str] | None = None) -> list[dict]:
-    args = ["yt-dlp", "--flat-playlist", "--no-warnings", "--print", "%(id)s\t%(title)s", *(auth or [])]
+def is_sign_in_check(stderr: str) -> bool:
+    """YouTube's "Sign in to confirm you're not a bot" refusal."""
+    return "Sign in to confirm" in stderr and "not a bot" in stderr
+
+
+class YouTubeAuth:
+    """yt-dlp auth flags for one run (never logged). Without explicit flags, the first
+    "not a bot" sign-in check switches the rest of the run to the remembered browser's cookies."""
+
+    def __init__(self, args: list[str] | None = None, fallback: list[str] | None = None):
+        self.args = list(args or [])
+        self.fallback = list(fallback or [])
+
+    def run(self, *args: str) -> subprocess.CompletedProcess:
+        cp = run(yt_dlp(*self.args, *args))
+        if cp.returncode != 0 and not self.args and self.fallback and is_sign_in_check(cp.stderr):
+            print(f"    YouTube asked to sign in; retrying with cookies from {self.fallback[-1]}", file=sys.stderr)
+            self.args = self.fallback
+            cp = run(yt_dlp(*self.args, *args))
+        return cp
+
+
+def load_settings(state_dir: str | None) -> dict:
+    path = Path(state_dir) / SETTINGS_FILE if state_dir else None
+    return json.loads(path.read_text(encoding="utf-8")) if path and path.exists() else {}
+
+
+def youtube_auth(a) -> YouTubeAuth:
+    """Explicit --cookies* flags, else the remembered browser as the sign-in fallback."""
+    browser = load_settings(getattr(a, "state_dir", None)).get("cookiesFromBrowser")
+    return YouTubeAuth(auth_args(a), ["--cookies-from-browser", browser] if browser else [])
+
+
+def newest(channel: str, count: int | None, auth: YouTubeAuth | None = None) -> list[dict]:
+    args = ["--flat-playlist", "--no-warnings", "--print", "%(id)s\t%(title)s"]
     if count:
         args += ["--playlist-end", str(count)]
     url = channel if "/videos" in channel or "list=" in channel else channel.rstrip("/") + "/videos"
-    cp = run(args + [url])
+    cp = (auth or YouTubeAuth()).run(*args, url)
     if cp.returncode != 0:
         print(cp.stderr, file=sys.stderr)
         raise SystemExit(f"yt-dlp failed listing channel: {channel}\n{COOKIES_HINT}")
@@ -178,7 +307,7 @@ def newest(channel: str, count: int | None, auth: list[str] | None = None) -> li
 
 
 def ffprobe_duration(video: Path) -> float:
-    cp = run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+    cp = run([find_tool("ffprobe") or "ffprobe", "-v", "error", "-show_entries", "format=duration",
               "-of", "default=nw=1:nk=1", str(video)])
     try:
         return float(cp.stdout.strip())
@@ -186,13 +315,14 @@ def ffprobe_duration(video: Path) -> float:
         return 0.0
 
 
-def download_one(vid: dict, vdir: Path, frames: int, auth: list[str] | None = None) -> dict:
+def download_one(vid: dict, vdir: Path, frames: int, auth: YouTubeAuth | None = None) -> dict:
+    auth = auth or YouTubeAuth()
     vdir.mkdir(parents=True, exist_ok=True)
     rec = {**vid, "transcript": False, "frames": 0}
     # 1) captions (no video download) — fast & free
-    cp = run(["yt-dlp", "--skip-download", "--write-subs", "--write-auto-subs",
-              "--sub-langs", "en,en-orig,en.*", "--sub-format", "vtt", "--convert-subs", "vtt",
-              "--no-warnings", *(auth or []), "-o", str(vdir / "video.%(ext)s"), vid["url"]])
+    cp = auth.run("--skip-download", "--write-subs", "--write-auto-subs",
+                  "--sub-langs", "en,en-orig,en.*", "--sub-format", "vtt", "--convert-subs", "vtt",
+                  "--no-warnings", "-o", str(vdir / "video.%(ext)s"), vid["url"])
     vtts = sorted(vdir.glob("video*.vtt"))
     clean = next((v for v in vtts if v.name == "video.en.vtt"), vtts[0] if vtts else None)
     if clean:
@@ -204,15 +334,17 @@ def download_one(vid: dict, vdir: Path, frames: int, auth: list[str] | None = No
         rec["error"] = yt_dlp_error(cp.stderr) if cp.returncode != 0 else "no English captions available"
     # 2) optional frames (downloads the video, then ffmpeg)
     if frames > 0:
-        cp = run(["yt-dlp", "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-                  "--no-warnings", *(auth or []), "-o", str(vdir / "src.%(ext)s"), vid["url"]])
+        ffmpeg = find_tool("ffmpeg")
+        cp = auth.run("-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+                      *(["--ffmpeg-location", ffmpeg] if ffmpeg else []),
+                      "--no-warnings", "-o", str(vdir / "src.%(ext)s"), vid["url"])
         src = next((p for p in vdir.glob("src.*") if p.suffix.lower() in (".mp4", ".mkv", ".webm")), None)
         if src:
             dur = ffprobe_duration(src) or 600
             fps = max(0.05, min(1.0, frames / dur))
             fdir = vdir / "frames"
             fdir.mkdir(exist_ok=True)
-            run(["ffmpeg", "-y", "-i", str(src), "-vf", f"fps={fps:.4f},scale=512:-1",
+            run([ffmpeg or "ffmpeg", "-y", "-i", str(src), "-vf", f"fps={fps:.4f},scale=512:-1",
                  "-qscale:v", "5", str(fdir / "frame_%04d.jpg")])
             rec["frames"] = len(list(fdir.glob("*.jpg")))
             try:
@@ -281,7 +413,7 @@ def cmd_ingest(a):
     if a.channel:
         m["channel"] = a.channel
     frames = 0 if a.no_frames else a.frames
-    auth = auth_args(a)
+    auth = youtube_auth(a)
     if a.videos:
         ids = [v.strip() for v in a.videos.split(",") if v.strip()]
         vids = [{"id": i, "title": i, "url": f"https://www.youtube.com/watch?v={i}"} for i in ids]
@@ -295,7 +427,7 @@ def cmd_ingest(a):
         print(f"skipping {len(vids) - len(todo)} already-ingested video(s); use --force to re-download")
     failed = []
     for i, vid in enumerate(todo, 1):
-        print(f"[{i}/{len(todo)}] {vid['id']} {vid['title'][:60]}")
+        print(f"[{i}/{len(todo)}] {vid['id']} {vid['title'][:60]}", flush=True)
         rec = download_one(vid, ws / ".forge" / "knowledge" / vid["id"], frames, auth)
         if rec.get("error"):
             print(f"    no transcript: {rec['error']}", file=sys.stderr)
@@ -314,7 +446,7 @@ def cmd_refresh(a):
     if not m.get("channel"):
         raise SystemExit("no channel in manifest; run ingest first")
     have = {v["id"] for v in m["videos"]}
-    fresh = [v for v in newest(m["channel"], a.count, auth_args(a)) if v["id"] not in have]
+    fresh = [v for v in newest(m["channel"], a.count, youtube_auth(a)) if v["id"] not in have]
     if not fresh:
         print("nothing new")
         return
@@ -375,11 +507,69 @@ def cmd_match(a):
     print(f"matched {len(rows)} sources -> {dest}")
 
 
+def saved_deps_ok(state: Path) -> str | None:
+    """Date of a saved successful check whose required tools are all still there, else None."""
+    if not state.exists():
+        return None
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    tools = saved.get("tools", {})
+    if all(tools.get(t) and Path(tools[t]).exists() for t in REQUIRED_TOOLS):
+        return saved.get("checkedAt", "?")
+    return None
+
+
+def cmd_deps(a):
+    state = Path(a.state_dir) / DEPS_FILE if a.state_dir else None
+    if state and not a.recheck:
+        checked = saved_deps_ok(state)
+        if checked:
+            print(f"dependencies ok (checked {checked}); --recheck to check again")
+            return
+    python_ok = sys.version_info >= MIN_PYTHON
+    tools = {t: find_tool(t) for t in TOOLS}
+    managers = package_managers() if not all(tools.values()) else {}
+    print(f"platform: {sys.platform}   python: {platform.python_version()} ({sys.executable})"
+          + ("" if python_ok else f"   ! needs {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+"))
+    for t, purpose in TOOLS.items():
+        path = tools[t]
+        if path:
+            note = "" if shutil.which(t) else "   (not on PATH; forge uses this path directly)"
+            print(f"  [ok]      {t:<8} {path}{note}")
+        else:
+            cmd = install_command(t, sys.platform, managers, sys.executable)
+            print(f"  [missing] {t:<8} {purpose}; install: {cmd or 'no supported package manager found, see README'}")
+    print(f"cookies fallback: {load_settings(a.state_dir).get('cookiesFromBrowser') or 'off'}")
+    if not (python_ok and all(tools[t] for t in REQUIRED_TOOLS)):
+        raise SystemExit("missing required dependencies")
+    if state:
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({"checkedAt": date.today().isoformat(), "python": sys.executable,
+                                     "tools": tools}, indent=1), encoding="utf-8")
+    print("ready")
+
+
+def cmd_cookies(a):
+    settings = load_settings(a.state_dir)
+    if a.browser:
+        name = a.browser.split(":")[0].split("+")[0]  # yt-dlp syntax: BROWSER[+KEYRING][:PROFILE]
+        if name not in YT_DLP_BROWSERS:
+            raise SystemExit(f"unknown browser {name!r}; one of: {', '.join(sorted(YT_DLP_BROWSERS))}")
+        settings["cookiesFromBrowser"] = a.browser
+    elif a.off:
+        settings.pop("cookiesFromBrowser", None)
+    if a.browser or a.off:
+        path = Path(a.state_dir) / SETTINGS_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(settings, indent=1), encoding="utf-8")
+    print(f"cookies fallback: {settings.get('cookiesFromBrowser') or 'off'}")
+
+
 def add_auth_options(p: argparse.ArgumentParser) -> None:
     g = p.add_mutually_exclusive_group()
     g.add_argument("--cookies-from-browser", metavar="BROWSER",
                    help="let yt-dlp read YouTube cookies from a local browser (chrome, firefox, edge, ...)")
     g.add_argument("--cookies", metavar="FILE", help="Netscape cookies.txt file for yt-dlp")
+    p.add_argument("--state-dir", help="plugin data dir; its remembered browser is used when YouTube asks to sign in")
 
 
 def main():
@@ -407,6 +597,22 @@ def main():
     s = sub.add_parser("match"); s.add_argument("--workspace", required=True)
     s.add_argument("--sources", required=True); s.set_defaults(fn=cmd_match)
 
+    s = sub.add_parser("deps", help="check python/yt-dlp/ffmpeg and print install commands for what is missing")
+    s.add_argument("--state-dir", help="where to remember a successful check (skips later checks)")
+    s.add_argument("--recheck", action="store_true", help="ignore the remembered check")
+    s.set_defaults(fn=cmd_deps)
+
+    s = sub.add_parser("cookies", help="remember (or forget) the browser whose cookies are used when YouTube asks to sign in")
+    s.add_argument("--state-dir", required=True)
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--browser", help="firefox, chrome, edge, ... optionally with a profile: firefox:PROFILE")
+    g.add_argument("--off", action="store_true")
+    s.set_defaults(fn=cmd_cookies)
+
+    # Titles and errors may hold any language; Windows pipes default to the ANSI code page.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     a = ap.parse_args()
     a.fn(a)
 

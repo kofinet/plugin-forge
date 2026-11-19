@@ -22,6 +22,21 @@ scaffold → ingest → (match) → distill → build → (install)
 - [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) on PATH — captions and channel listing
 - [`ffmpeg`/`ffprobe`](https://ffmpeg.org/) on PATH — only if you ask for video frames (`--frames`)
 
+You don't have to install them by hand: on the first `/forge` run (or with
+`/plugin-forge:forge-setup`) the plugin checks what is there, offers to install what is missing and
+remembers a successful check, so later runs skip it. Tools installed outside `PATH` (winget links,
+pipx / `pip --user`, Homebrew) are found automatically.
+
+The plugin is the same on Windows, macOS and Linux; only installing the tools differs:
+
+| OS | Python | yt-dlp | ffmpeg (optional) |
+|---|---|---|---|
+| Windows | `winget install Python.Python.3.12` | `winget install yt-dlp.yt-dlp` | `winget install Gyan.FFmpeg` |
+| macOS | `brew install python` (or `python3` from Xcode CLT) | `brew install yt-dlp` | `brew install ffmpeg` |
+| Linux | distro package (`python3`) | `pipx install yt-dlp` (distro packages are often too old for YouTube) | `sudo apt install ffmpeg` / `dnf install ffmpeg` |
+
+The examples below use `py` (Windows); on macOS and Linux run `python3` instead.
+
 ## Install
 
 ```
@@ -64,13 +79,29 @@ py scripts/forge.py ingest --workspace ./my-plugin --channel https://www.youtube
 
 ### "Sign in to confirm you're not a bot"
 
-YouTube sometimes blocks anonymous caption downloads. `ingest` and `refresh` then report the
-yt-dlp error and exit non-zero. Rerun with your browser's YouTube session:
+YouTube sometimes blocks anonymous caption downloads, depending on your IP's reputation and how
+many requests it sees. When that happens during `/forge`, the plugin walks through these options
+in order and stops at the first one that works:
+
+1. update yt-dlp (an outdated one is a common cause);
+2. wait and retry later (the block is often temporary);
+3. cookies from a browser you already have, ideally signed in to a separate Google account:
+   `--cookies-from-browser <browser>` (yt-dlp's docs warn that an account used for automated
+   downloads can be blocked by YouTube);
+4. a `cookies.txt` export: `--cookies <file>`;
+5. last resort: install Firefox and sign in there with a separate account. yt-dlp reads Firefox's
+   cookies reliably on every OS, while Chrome and Edge often fail on Windows (locked, encrypted
+   cookie database).
 
 ```bash
-py scripts/forge.py ingest --workspace <ws> --cookies-from-browser firefox   # or chrome, edge, ...
+py scripts/forge.py ingest --workspace <ws> --cookies-from-browser chrome   # one-off, any browser
 py scripts/forge.py ingest --workspace <ws> --cookies path/to/cookies.txt
+py scripts/forge.py cookies --state-dir <plugin data dir> --browser <browser>  # remember it; --off to stop
 ```
+
+With a remembered browser, `ingest`/`refresh` (run with the same `--state-dir`) still download
+anonymously and switch to that browser's cookies for the rest of the run only when YouTube asks to
+sign in. The cookies are read fresh from the browser on every run, so there is nothing to refresh.
 
 The cookies are only passed to yt-dlp. **Never commit a cookies file** — the generated plugin's
 `.gitignore` already excludes `cookies*.txt` and `*.cookies`.
@@ -102,6 +133,9 @@ Terms of Service and the creators' rights: credit the creator in your plugin, ci
 py -m unittest discover -s tests
 claude plugin validate .
 ```
+
+CI (`.github/workflows/tests.yml`) runs the tests on Windows, macOS and Linux with Python 3.9 and the
+latest 3.x.
 
 ## Inspiration
 

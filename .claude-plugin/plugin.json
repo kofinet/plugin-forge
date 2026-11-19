@@ -1,6 +1,6 @@
 {
   "name": "plugin-forge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Forge a Claude Code plugin from a YouTube channel. Scaffolds a plugin project, downloads videos (transcripts + optional frames) from a channel, distills the knowledge into cited reference docs, and builds a new plugin with skills and commands.",
   "author": {
     "name": "Marek Kawa",

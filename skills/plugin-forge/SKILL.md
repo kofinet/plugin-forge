@@ -18,19 +18,27 @@ Deterministic steps run through the bundled script. Resolve the interpreter once
 PY=$(command -v py || command -v python3 || command -v python)
 FORGE="${CLAUDE_PLUGIN_ROOT}/scripts/forge.py"
 ```
-Requires `yt-dlp` on PATH (captions + channel listing); `ffmpeg`/`ffprobe` only for `--frames`.
+Requires `yt-dlp` (captions + channel listing); `ffmpeg`/`ffprobe` only for `--frames`.
+Before the first `forge.py` call, check the dependencies (instant after the first successful check):
+```bash
+"$PY" "$FORGE" deps --state-dir "${CLAUDE_PLUGIN_DATA}"
+```
+If `PY` is empty, the check exits non-zero, or a later call says a tool was "not found", follow the
+`forge-setup` skill (`plugin-forge:forge-setup`) first, then continue.
 
 ## Pipeline (also exposed as individual /forge* commands)
 1. **Scaffold** — `"$PY" "$FORGE" scaffold --name "<Name>" [--dir "<parent>"] --channel "<url>"`.
    Pass `--dir` only if the user named a parent; the default parent is the current directory.
    Creates `<parent>/<Name>/` with `.claude-plugin/`, `skills/`, `commands/`, `reference/`, and
    `.forge/manifest.json`. The workspace = `<parent>/<Name>`.
-2. **Ingest** — `"$PY" "$FORGE" ingest --workspace "<ws>" --channel "<url>" --count N [--frames K]`.
+2. **Ingest** — `"$PY" "$FORGE" ingest --workspace "<ws>" --channel "<url>" --count N [--frames K] --state-dir "${CLAUDE_PLUGIN_DATA}"`.
    Downloads the N newest videos' transcripts (and K frames each if asked) into `.forge/knowledge/`.
    Default is transcripts-only (fast, reliable, free); add `--frames` only if visuals matter.
-   Already-ingested videos are skipped (`--force` re-downloads). If it reports YouTube's
-   "Sign in to confirm you're not a bot", ask the user which browser they use and rerun with
-   `--cookies-from-browser <browser>` (or `--cookies <file>`); never copy cookies into the workspace.
+   Already-ingested videos are skipped (`--force` re-downloads). With `--state-dir`, YouTube's
+   "Sign in to confirm you're not a bot" is retried automatically with the remembered browser's
+   cookies. If it still fails, follow the "When YouTube keeps asking to sign in" ladder of the
+   `forge-setup` skill, in order (installing Firefox is only its last step). Never copy cookies into
+   the workspace.
 3. **Match** (optional) — if the user has code bundles: `"$PY" "$FORGE" match --workspace "<ws>"
    --sources "<dir>"` → writes `reference/catalog.md` (prefers each bundle's Readme link).
 4. **Distill** — read `.forge/knowledge/*/transcript.txt` and write `reference/` docs

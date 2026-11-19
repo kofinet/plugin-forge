@@ -19,4 +19,7 @@ Follow the `plugin-forge` skill end-to-end. Read `${CLAUDE_PLUGIN_ROOT}/referenc
 6. If requested, **validate + install** and tell the user to restart Claude Code.
 
 Resolve the interpreter as `PY=$(command -v py || command -v python3 || command -v python)` and call
-`"$PY" "${CLAUDE_PLUGIN_ROOT}/scripts/forge.py" ...`. Keep the user in the loop on scope decisions.
+`"$PY" "${CLAUDE_PLUGIN_ROOT}/scripts/forge.py" ...`. Before step 2, run
+`"$PY" "${CLAUDE_PLUGIN_ROOT}/scripts/forge.py" deps --state-dir "${CLAUDE_PLUGIN_DATA}"` (instant after the
+first successful check); if `PY` is empty or it fails, follow the `forge-setup` skill first.
+Keep the user in the loop on scope decisions.
